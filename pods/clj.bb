@@ -55,26 +55,25 @@
 
 
 (defn start-clj-process! [port deps]
-  (future (clojure.java.shell/sh "clojure"
-                                 "-Sdeps" (pr-str deps)
-                                 "-m" "pod.clj"
-                                 (str port)
-                                 "TODO-path-to-pid-file")))
+  (let [cmd ["clojure"
+             "-Sdeps" (pr-str deps)
+             "-m" "pod.clj"
+             (str port)
+             "TODO-path-to-pid-file"]
+        _ (debug "starting process" cmd)
+        proc (-> (java.lang.ProcessBuilder. cmd)
+                 (.redirectOutput java.lang.ProcessBuilder$Redirect/INHERIT)
+                 (.redirectError java.lang.ProcessBuilder$Redirect/INHERIT)
+                 (.start))]
+    (debug "process started" cmd)
+    nil))
 
-
-(def conn
+;; We need to work with delays in order to capture the deps as cli argument
+(def *conn
   (delay
    (or (connect-to-socket port)
        (do (start-clj-process! port @*deps*)
            (connect-with-retry 49998)))))
-
-(let [s @conn]
-  (if (.isConnected s)
-    (do
-      (def in (java.io.BufferedReader. (java.io.InputStreamReader. (.getInputStream s))))
-      (def out (java.io.PrintWriter. (.getOutputStream s) true)))
-
-    (throw (ex-info "Couldn not connect!" {}))))
 
 
 (defn handle-prepl-output [in]
@@ -92,13 +91,22 @@
         #_(conj output prepl-data)
         (let [value (clojure.edn/read-string value)]
           (if (:exception prepl-data)
-            (throw (ex-info "Backend error" value))
+            (do (debug prepl-data)
+                (throw (ex-info "Backend error" value)))
             value))))))
 
+
+(def *in (delay (java.io.BufferedReader. (java.io.InputStreamReader. (.getInputStream @*conn)))))
+(def *out (delay (java.io.PrintWriter. (.getOutputStream @*conn) true)))
+
+
 (defn clj-eval* [code]
-  (binding [*out* out]
+  (when-not (.isConnected @*conn)
+    (throw (ex-info "Could not connect" {})))
+
+  (binding [*out* @*out]
     (prn code))
-  (handle-prepl-output in))
+  (handle-prepl-output @*in))
 
 
 (def lookup {'pod.clj/eval clj-eval*})
